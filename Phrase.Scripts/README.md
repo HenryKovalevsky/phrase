@@ -9,5 +9,13 @@ This is an initial draft of Proof of Concept.
 
 ## How to use
 
+### Configuration
+
+- `touch "../.env"` — create an environment variables configuration file;
+-  add your CSE ID and API key to the configuration, use `cat "../.env.example` for example.
+
+### Paket
+
+- `paket init` — initialize paket bootstraper;
 - `paket restore` — install dependencies;
 - `paket generate-load-scripts --type fsx` — generate include scripts that reference installed packages in the interactive environment.
