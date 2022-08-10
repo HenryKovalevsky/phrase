@@ -1,14 +1,21 @@
-#load @".paket/load/netstandard2.0/Google.Apis.Customsearch.v1.fsx"
-#load @".paket/load/netstandard2.0/Suave.fsx"
+[<AutoOpen>]
+module Prelude =
+  let inline (^) f x = f x 
+
+#r "nuget: dotenv.net, 3.1.1"
+#r "nuget: Google.Apis.Customsearch.v1, 1.49.0.2084"
+#r "nuget: FSharp.SystemTextJson, 0.19.13"
+#r "nuget: Suave, 2.6.2"
+
 
 open System
+open System.Text.Encodings.Web
+open System.Text.Json
+open System.Text.Json.Serialization
 open System.Threading
 
 open Google.Apis.Customsearch.v1
 open Google.Apis.Services
-
-open Newtonsoft.Json
-open Newtonsoft.Json.Serialization
 
 open Suave              
 open Suave.Successful
@@ -16,7 +23,15 @@ open Suave.Filters
 open Suave.Operators
 open Suave.RequestErrors 
 
-let inline (^) f x = f x 
+open dotenv.net
+
+DotEnv.Load()
+
+let cseId = Environment.GetEnvironmentVariable "CSE_ID"
+let cseApiKey = Environment.GetEnvironmentVariable "CSE_API_KEY"
+
+let host = Environment.GetEnvironmentVariable "HOST"
+let port = Environment.GetEnvironmentVariable "PORT" |> Int32.Parse
 
 let nullableToOption (n : Nullable<_>) = 
   if n.HasValue 
@@ -34,29 +49,18 @@ type Item =
     HtmlSnippet: string }
 
 type Result = 
-  { TotalCount: int64 option
+  { TotalCount: int
     SearchTime: float option
     Items: Item list }
 
-#load @".paket/load/netstandard2.0/dotenv.net.fsx"
-
-open dotenv.net
-
-let envPath = __SOURCE_DIRECTORY__ + @"/../.env";
-
-DotEnv.Config(true, envPath)
-
-let cseId = Environment.GetEnvironmentVariable  "CSE_ID"
-let cseApiKey = Environment.GetEnvironmentVariable  "CSE_API_KEY"
-
-let buildExactQuery = sprintf @"""%s""" 
-
 let JSON value =
-  let jsonSerializerSettings = JsonSerializerSettings()
-  jsonSerializerSettings.ContractResolver <- CamelCasePropertyNamesContractResolver()
-  jsonSerializerSettings.Formatting <- Formatting.Indented
+  let options = JsonSerializerOptions()
+  options.Converters.Add(JsonFSharpConverter())
+  options.WriteIndented <- true
+  options.PropertyNameCaseInsensitive <- true
+  options.Encoder <- JavaScriptEncoder.UnsafeRelaxedJsonEscaping
 
-  let result = JsonConvert.SerializeObject (value, jsonSerializerSettings)
+  let result = JsonSerializer.Serialize (value, options)
   
   Writers.setMimeType "application/json; charset=utf-8"
   >=> OK result
@@ -73,14 +77,15 @@ let app =
                   let initializer = BaseClientService.Initializer(ApiKey = cseApiKey) 
                   use searchService = new CustomsearchService(initializer)
 
-                  let request = searchService.Cse.List(buildExactQuery query)
+                  let request = searchService.Cse.List()
                   request.Cx <- cseId
+                  request.ExactTerms <- query
 
-                  let top = 10L
-                  let skip = 0L
+                  let top = 10
+                  let skip = 0
 
-                  request.Num <- Nullable<int64>(top) 
-                  request.Start <- Nullable<int64>(1L + top + skip)
+                  request.Num <- top
+                  request.Start <- 1 + top + skip
 
                   let! data = request.ExecuteAsync() |> Async.AwaitTask
 
@@ -94,7 +99,7 @@ let app =
                          Snippet = i.Snippet
                          HtmlSnippet = i.HtmlSnippet }
 
-                  let total = nullableToOption data.SearchInformation.TotalResults
+                  let _, total = Int32.TryParse data.SearchInformation.TotalResults
                   let searchTime = nullableToOption data.SearchInformation.SearchTime
                   let items = 
                     if isNull data.Items 
@@ -114,18 +119,20 @@ let startServer () =
   let cts = new CancellationTokenSource()
   let config = 
     { defaultConfig with
-        bindings = [ HttpBinding.createSimple HTTP "127.0.0.1" 8084 ]
+        bindings = [ HttpBinding.createSimple HTTP host port ]
         cancellationToken = cts.Token }
   let listening, server = 
     startWebServerAsync config app
   Async.Start(server, cts.Token) |> ignore
   Async.RunSynchronously listening |> ignore
-  cts
 
-let stopServer (cts : CancellationTokenSource) =
-  cts.Cancel true
-  cts.Dispose()
+  let stopServer() =
+    cts.Cancel true
+    cts.Dispose()
+    printfn "Server stopped."
 
-let cts = startServer()
+  stopServer
 
-stopServer cts
+let stopServer = startServer()
+
+// stopServer()
